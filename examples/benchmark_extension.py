@@ -1,10 +1,12 @@
 # Imports
+import datetime as dt
 import numpy as np
 import pandas as pd
 
 from types import Optional
 
 from sklearn.preprocessing import MinMaxScaler, LabelEncoder
+from sklearn.decomposition import PCA
 
 # Constants
 VALID_PREPROCESS_MODES = ('naive', 'one-hot', 'one-hot-pca', 'extended')
@@ -13,6 +15,7 @@ DIFFICULTY_PARAMETERS = {
     'medium':None,
     'hard':None
 }
+MINIMUM_N_TO_D_RATIO = 5
 
 class BenchmarkMethods:
     def __init__(self,
@@ -85,6 +88,10 @@ class BenchmarkMethods:
         self.categorical_encoders = dict()
         self.dummy_indices = None
 
+        self.preprocessing_time = 0.0
+        self.clustering_time = 0.0
+        self.evaluation_time = 0.0
+
     def benchmark(self,
                   num_cols: list[str],
                   cat_cols: list[str],
@@ -101,8 +108,20 @@ class BenchmarkMethods:
 
         # Call clustering according to approach 
     
-    def preprocess(self):
+    def categorical_encoding(self, df, cols):
+        for i in range(df.shape[1]):
+            idx = cols[i]
+            
+            cat_encoder = LabelEncoder()
+            df.iloc[:,i] = cat_encoder.fit_transform(df.iloc[:,i])
+            
+            self.categorical_encoders[idx] = cat_encoder
         
+        return df
+
+    def preprocess(self):
+        time_start = dt.datetime.now()
+
         dataset = self.data
         num_cols = self.num_indices
         cat_cols = self.cat_indices
@@ -129,45 +148,69 @@ class BenchmarkMethods:
         self.numerical_encoder = num_scaler
         
         # Categorical variables are labeled as integers
-        for i in range(X_cat.shape[1]):
-            idx = cat_cols[i]
-            
-            cat_encoder = LabelEncoder()
-            X_cat.iloc[:,i] = cat_encoder.fit_transform(X_cat.iloc[:,i])
-            
-            self.categorical_encoders[idx] = cat_encoder
+        X_cat = self.categorical_encoding(X_cat, cat_cols)
 
         # Process multi-valued columns according to approach
         if approach == 'naive':
             # Set multi-valued as text and apply categorical encoding
-            for i in range(X_multi.shape[1]):
-                idx = multi_cols[i]
-
-                cat_encoder = LabelEncoder()
-                X_multi.iloc[:,i] = cat_encoder.fit_transform(
-                    X_multi.iloc[:,i].astype(str)
-                )
-
-                self.categorical_encoders[idx] = cat_encoder
+            X_multi = self.categorical_encoding(X_multi, multi_cols)
             
             # Return matrices
+            self.preprocessing_time = (
+                dt.datetime.now() - time_start).total_seconds()
             return X_num, X_cat, X_multi
 
         elif approach in ('one-hot', 'one-hot-pca'):
-            # Steps
-            
+            # Unpack the multi-valued dataset
+            columns_to_concat = []
+            for i in range(X_multi.shape[1]):
+                dummy_df = pd.get_dummies(
+                        X_multi.iloc[:,i].apply(pd.Series).stack()
+                    ).groupby(
+                        'index', level=0
+                    ).sum()
+                columns_to_concat.append(dummy_df)
+            X_dummies = pd.concat(columns_to_concat, axis=1)
+
+            # If there are too many dummies, cut down least frequent
+            if X_dummies.shape[0]/X_dummies.shape[1] <= MINIMUM_N_TO_D_RATIO:
+                frequencies = pd.DataFrame(
+                        X_dummies.mean(), columns=['freq']
+                    ).sort_values('freq', ascending=False)
+                
+                saved_dummies = list(
+                    frequencies.iloc[:int(X_dummies.shape[0]/5)].index)
+                X_dummies = X_dummies.loc[:,saved_dummies]
+
             if approach == 'one-hot-pca':
-                pass # Extra steps
+                # Apply MLE to set number of components automatically
+                
+                pca = PCA(
+                    n_components='mle',
+                    whiten=True
+                    # Vectors are scaled to unit variance so that we can use 
+                    # them as numeric attributes.    
+                )  
+
+                X_dummies = pca.fit_transform(X_dummies)
+               
+                pca_cols = [
+                    "component_"+str(col) for col in range(
+                        X_dummies.shape[1]
+                    )]
+                X_dummies = pd.DataFrame(X_dummies,
+                                         columns=pca_cols)
             
             # Consolidate all matrices into input_matrix X.
-            X = pd.concat([X_num, X_cat, X_multi])
-            num_index = 
-            cat_index = 
+            self.preprocessing_time = (
+                dt.datetime.now() - time_start).total_seconds()
+            return X_num, X_cat, X_dummies
+        
         elif approach == 'extended':
-            # Steps
+            # Ensure the elements in X_multi can be coerced into sets
 
             # Consolidate all matrices into input_matrix X.
-            X = pd.concat([X_num, X_cat, X_multi])
-            num_index = 
-            cat_index = 
-            multi_cols_index = 
+            return X_num, X_cat, X_multi
+
+    def cluster(self):
+        pass
