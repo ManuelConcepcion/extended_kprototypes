@@ -5,6 +5,7 @@ Dissimilarity measures for clustering
 import numpy as np
 
 
+# Categorical dissimilarities
 def matching_dissim(a, b, **_):
     """Simple matching dissimilarity function"""
     return np.sum(a != b, axis=1)
@@ -18,25 +19,30 @@ def jaccard_dissim_binary(a, b, **__):
         if (denominator == 0).any(0):
             raise ValueError("Insufficient Number of data since union is 0")
         return 1 - numerator / denominator
-    raise ValueError("Missing or non Binary values detected in Binary columns.")
+    raise ValueError("Missing or non Binary values detected "
+                     "in Binary columns.")
 
 
 def jaccard_dissim_label(a, b, **__):
     """Jaccard dissimilarity function for label encoded variables"""
-    if np.isnan(a.astype('float64')).any() or np.isnan(b.astype('float64')).any():
+    if (np.isnan(a.astype('float64')).any()
+            or np.isnan(b.astype('float64')).any()):
         raise ValueError("Missing values detected in Numeric columns.")
     intersect_len = np.empty(len(a), dtype=int)
     union_len = np.empty(len(a), dtype=int)
     ii = 0
     for row in a:
         intersect_len[ii] = len(np.intersect1d(row, b))
-        union_len[ii] = len(np.unique(row)) + len(np.unique(b)) - intersect_len[ii]
+        union_len[ii] = (len(np.unique(row))
+                         + len(np.unique(b))
+                         - intersect_len[ii])
         ii += 1
     if (union_len == 0).any():
         raise ValueError("Insufficient Number of data since union is 0")
     return 1 - intersect_len / union_len
 
 
+# Numerical Dissimilarities
 def euclidean_dissim(a, b, **_):
     """Euclidean distance dissimilarity function"""
     if np.isnan(a).any() or np.isnan(b).any():
@@ -77,9 +83,23 @@ def ng_dissim(a, b, X=None, membship=None):
         raise ValueError("'membship' must be a rectangular array where "
                          "the number of rows in 'membship' equals the "
                          "number of rows in 'a' and the number of "
-                         "columns in 'membship' equals the number of rows in 'X'.")
+                         "columns in 'membship' equals the number of "
+                         "rows in 'X'.")
 
     return np.array([np.array([calc_dissim(b, X, membship[idj], idr)
                                if b[idr] == t else 1.0
                                for idr, t in enumerate(val_a)]).sum(0)
                      for idj, val_a in enumerate(a)])
+
+
+# Multi-valued dissimilarities
+def jaccard_dissim_sets(a, b, **__):
+    """
+    Return the sum of jaccard dissimilarities across multi-valued
+    categorical attributes.
+    """
+    return np.sum(
+            np.vectorize(lambda x, y:
+                         (len(x.intersection(y))/len(x.union(y)))
+                         )(a, b)
+    )
