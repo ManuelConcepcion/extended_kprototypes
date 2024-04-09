@@ -98,8 +98,18 @@ def jaccard_dissim_sets(a, b, **__):
     Return the sum of jaccard dissimilarities across multi-valued
     categorical attributes.
     """
-    return np.sum(
-            np.vectorize(lambda x, y:
-                         (len(x.intersection(y))/len(x.union(y)))
-                         )(a, b)
-    )
+    # Pairwise case where a and b are one-dimensional
+    if len(a.shape) == 1 and len(b.shape) == 1:
+        return np.sum(
+                np.vectorize(lambda x, y:
+                             (len(x.intersection(y))/len(x.union(y)))
+                             )(a, b)
+        )
+    # In all other cases, the axis=1 argument *does not* throw an error
+    else:
+        return np.sum(
+                  np.vectorize(lambda x, y:
+                               (len(x.intersection(y))/len(x.union(y)))
+                               )(a, b),
+                  axis=1
+        )
