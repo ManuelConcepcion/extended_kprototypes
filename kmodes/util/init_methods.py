@@ -80,6 +80,23 @@ def init_cao_multi(x_multi: ArrayLike,
     n_points, n_attrs = x_multi.shape
     centroids = np.empty((n_clusters, n_attrs), dtype='object')
 
+    attr_densities = count_dictionary_value_frequency(x_multi, n_points)
+
+    # Create N x D densities matrix to sum all attributes and get the 1d 'dens'
+    # Choose initial centroids based on distance and density.
+    return cao_logic(x=x_multi,
+                     centroids=centroids,
+                     dens=np.sum(
+                         np.column_stack(attr_densities), axis=1) / n_attrs,
+                     n_clusters=n_clusters,
+                     dissim=dissim)
+
+
+def count_dictionary_value_frequency(x_multi, n_points):
+    """
+    Find the frequency of each individual item of each attribute's
+    dictionary.
+    """
     # Create a dictionary of frequencies for each attribute
     flat_x = np.array(list(
         map(lambda x: np.array(x, dtype='object'), x_multi)
@@ -110,14 +127,7 @@ def init_cao_multi(x_multi: ArrayLike,
             )])
         attr_densities.append(totals / len(attr_dict.keys()))
 
-    # Create N x D densities matrix to sum all attributes and get the 1d 'dens'
-    # Choose initial centroids based on distance and density.
-    return cao_logic(x=x_multi,
-                     centroids=centroids,
-                     dens=np.sum(
-                         np.column_stack(attr_densities), axis=1) / n_attrs,
-                     n_clusters=n_clusters,
-                     dissim=dissim)
+    return attr_densities
 
 
 def cao_logic(x, centroids, dens, n_clusters, dissim):
