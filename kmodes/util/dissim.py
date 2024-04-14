@@ -98,20 +98,16 @@ def jaccard_dissim_sets(a, b, **__):
     Return the sum of jaccard indexes across multi-valued
     categorical attributes divided by the number of attributes.
     """
-    # Pairwise case where a and b are one-dimensional
     if len(a.shape) == 1 and len(b.shape) == 1:
-        n_attrs = a.shape[0]
-        return n_attrs - np.sum(
-                np.vectorize(lambda x, y:
-                             (len(x.intersection(y))/len(x.union(y)))
-                             )(a, b)
-        )
-    # In all other cases, the axis=1 argument *does not* throw an error
+        # Pairwise case where a and b are one-dimensional
+        reference_axis = 0
     else:
-        n_attrs = a.shape[1]
-        return n_attrs - np.sum(
-                  np.vectorize(lambda x, y:
-                               (len(x.intersection(y))/len(x.union(y)))
-                               )(a, b),
-                  axis=1
-        )
+        # All other cases
+        reference_axis = 1
+
+    n_attrs = a.shape[reference_axis]
+    return n_attrs - np.sum(
+            np.vectorize(lambda x, y:
+                         (len(x.intersection(y)) / len(x.union(y)))
+                         )(a, b), axis=reference_axis
+                            )
