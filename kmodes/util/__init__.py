@@ -1,11 +1,14 @@
 """
 Generic utilities for clustering
 """
+from hashlib import sha256
+from typing import Optional
 
 import numpy as np
 
 
 def pandas_to_numpy(x):
+    """Turn pandas to numpy if x is a pandas dataframe"""
     return x.values if 'pandas' in str(x.__class__) else x
 
 
@@ -49,6 +52,27 @@ def encode_features(X, enc_map=None):
     return Xenc, enc_map
 
 
+def convert_listlike_to_sets(Xmulti):
+    """
+    Take multi-valued attributes encoded as lists and turn them into sets.
+    """
+    try:
+        out = np.zeros(shape=Xmulti.shape, dtype='object')
+        for ipoint in range(Xmulti.shape[0]):
+            for iattr in range(Xmulti.shape[1]):
+                if not isinstance(Xmulti[ipoint][iattr], set):
+                    print(f"{type(Xmulti[ipoint][iattr])}")
+                    out[ipoint][iattr] = set(Xmulti[ipoint][iattr])
+                else:
+                    out[ipoint][iattr] = Xmulti[ipoint][iattr]
+
+    except TypeError as exc:
+        raise TypeError("There was a problem converting the multi-valued "
+                        "attributes to sets.") from exc
+
+    return out
+
+
 def decode_centroids(encoded, mapping):
     """Decodes the encoded centroids array back to the original data
     labels using a list of mappings.
@@ -61,6 +85,20 @@ def decode_centroids(encoded, mapping):
     return np.atleast_2d(np.array(decoded)).T
 
 
-def get_unique_rows(a):
+def get_unique_rows(a, source: Optional[str] = None):
     """Gets the unique rows in a numpy array."""
-    return np.vstack(list({tuple(row) for row in a}))
+    if source is None:
+        return np.vstack(list({tuple(row) for row in a}))
+
+    elif source == 'extendedkproto':
+        unique_seen = {'hello'}
+        unique_rows = []
+
+        for row in a:
+            hexdigest = sha256(
+                str(row).encode('utf-8'), usedforsecurity=False).hexdigest()
+            if hexdigest not in unique_seen:
+                unique_seen.add(hexdigest)
+                unique_rows.append(row)
+
+        return np.vstack(unique_rows)

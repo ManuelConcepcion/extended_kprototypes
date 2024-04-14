@@ -15,8 +15,8 @@ from sklearn.utils.validation import check_array
 
 from . import kmodes
 from .util import get_max_value_key, encode_features, get_unique_rows, \
-    decode_centroids, pandas_to_numpy
-from .util.dissim import matching_dissim, euclidean_dissim
+    decode_centroids, pandas_to_numpy, convert_listlike_to_sets
+from .util.dissim import matching_dissim, euclidean_dissim, jaccard_dissim_sets
 from .util.init_methods import init_cao, init_huang, init_cao_multi
 
 # Number of tries we give the initialization methods to find non-empty
@@ -27,7 +27,7 @@ MAX_INIT_TRIES = 20
 RAISE_INIT_TRIES = 100
 
 
-class KPrototypes(kmodes.KModes):
+class ExtendedKPrototypes(kmodes.KModes):
     """k-protoypes clustering algorithm for mixed numerical/categorical data.
 
     Parameters
@@ -45,8 +45,8 @@ class KPrototypes(kmodes.KModes):
         Defaults to the Euclidian dissimilarity function.
 
     cat_dissim : func, default: matching_dissim
-        Dissimilarity function used by the kmodes algorithm for categorical variables.
-        Defaults to the matching dissimilarity function.
+        Dissimilarity function used by the kmodes algorithm for categorical
+        variables. Defaults to the matching dissimilarity function.
 
     n_init : int, default: 10
         Number of time the k-modes algorithm will be run with different
@@ -116,14 +116,19 @@ class KPrototypes(kmodes.KModes):
     """
 
     def __init__(self, n_clusters=8, max_iter=100, num_dissim=euclidean_dissim,
-                 cat_dissim=matching_dissim, init='Cao', n_init=10, gamma=None,
-                 verbose=0, random_state=None, n_jobs=1):
+                 cat_dissim=matching_dissim, multi_dissim=jaccard_dissim_sets,
+                 init='Cao', n_init=10, gamma_c=0.33, gamma_m=0.33, verbose=0,
+                 random_state=None, n_jobs=1):
 
-        super(KPrototypes, self).__init__(n_clusters, max_iter, cat_dissim, init,
-                                          verbose=verbose, random_state=random_state,
-                                          n_jobs=n_jobs)
+        super(ExtendedKPrototypes, self).__init__(n_clusters, max_iter,
+                                                  cat_dissim,
+                                                  init, verbose=verbose,
+                                                  random_state=random_state,
+                                                  n_jobs=n_jobs)
         self.num_dissim = num_dissim
-        self.gamma = gamma
+        self.multi_dissim = multi_dissim
+        self.gamma_c = gamma_c
+        self.gamma_m = gamma_m
         self.n_init = n_init
         if isinstance(self.init, list) and self.n_init > 1:
             if self.verbose:
@@ -131,7 +136,8 @@ class KPrototypes(kmodes.KModes):
                       "Setting n_init to 1.")
             self.n_init = 1
 
-    def fit(self, X, y=None, categorical=None, sample_weight=None):
+    def fit(self, X, y=None, categorical=None, multi_valued=None,
+            sample_weight=None):
         """Compute k-prototypes clustering.
 
         Parameters
@@ -145,10 +151,19 @@ class KPrototypes(kmodes.KModes):
 
         """
         if categorical is not None:
-            assert isinstance(categorical, (int, list, tuple)), f"The 'categorical' \
-                argument needs to be an integer with the index of the categorical \
-                column in your data, or a list or tuple of several of them, \
-                but it is a {type(categorical)}."
+            if not isinstance(categorical, (int, list, tuple)):
+                raise ValueError("The 'categorical' argument needs to be an "
+                                 "integer with the index of the categorical "
+                                 "column in your data, or a list or tuple of "
+                                 "several of them, but it is a "
+                                 f"{type(categorical)}.")
+        if multi_valued is not None:
+            if not isinstance(multi_valued, (int, list, tuple)):
+                raise ValueError("The 'categorical' argument needs to be an "
+                                 "integer with the index of the categorical "
+                                 "column in your data, or a list or tuple of "
+                                 "several of them, but it is a "
+                                 f"{type(multi_valued)}.")
 
         X = pandas_to_numpy(X)
 
@@ -159,25 +174,29 @@ class KPrototypes(kmodes.KModes):
         # If self.gamma is None, gamma will be automatically determined from
         # the data. The function below returns its value.
         self._enc_cluster_centroids, self._enc_map, self.labels_, self.cost_, \
-        self.n_iter_, self.epoch_costs_, self.gamma = k_prototypes(
-            X,
-            categorical,
-            self.n_clusters,
-            self.max_iter,
-            self.num_dissim,
-            self.cat_dissim,
-            self.gamma,
-            self.init,
-            self.n_init,
-            self.verbose,
-            random_state,
-            self.n_jobs,
-            sample_weight,
-        )
+            self.n_iter_, self.epoch_costs_, self.gamma_c, self.gamma_m = \
+            k_prototypes(
+                X=X,
+                categorical=categorical,
+                multi_valued=multi_valued,
+                n_clusters=self.n_clusters,
+                max_iter=self.max_iter,
+                num_dissim=self.num_dissim,
+                cat_dissim=self.cat_dissim,
+                multi_dissim=self.multi_dissim,
+                gamma_c=self.gamma_c,
+                gamma_m=self.gamma_m,
+                init=self.init,
+                n_init=self.n_init,
+                verbose=self.verbose,
+                random_state=random_state,
+                n_jobs=self.n_jobs,
+                sample_weight=sample_weight,
+            )
 
         return self
 
-    def predict(self, X, categorical=None, **kwargs):
+    def predict(self, X, categorical=None, multi_valued=None, **kwargs):
         """Predict the closest cluster each sample in X belongs to.
 
         Parameters
@@ -194,27 +213,47 @@ class KPrototypes(kmodes.KModes):
         assert hasattr(self, '_enc_cluster_centroids'), "Model not yet fitted."
 
         if categorical is not None:
-            assert isinstance(categorical, (int, list, tuple)), f"The 'categorical' \
-                argument needs to be an integer with the index of the categorical \
-                column in your data, or a list or tuple of several of them, \
-                but it is a {type(categorical)}."
+            if not isinstance(categorical, (int, list, tuple)):
+                raise ValueError("The 'categorical' argument needs to be an "
+                                 "integer with the index of the categorical "
+                                 "column in your data, or a list or tuple of "
+                                 "several of them, but it is a "
+                                 f"{type(categorical)}.")
 
+        if multi_valued is not None:
+            if not isinstance(multi_valued, (int, list, tuple)):
+                raise ValueError("The 'categorical' argument needs to be an "
+                                 "integer with the index of the categorical "
+                                 "column in your data, or a list or tuple of "
+                                 "several of them, but it is a "
+                                 f"{type(multi_valued)}.")
+        if self.verbose:
+            print('Preprocessing')
         X = pandas_to_numpy(X)
-        Xnum, Xcat = _split_num_cat(X, categorical)
+        Xnum, Xcat, Xmulti = _split_num_cat_multi(X, categorical, multi_valued)
         Xnum, Xcat = check_array(Xnum), check_array(Xcat, dtype=None)
         Xcat, _ = encode_features(Xcat, enc_map=self._enc_map)
-        return labels_cost(Xnum, Xcat, self._enc_cluster_centroids,
-                           self.num_dissim, self.cat_dissim, self.gamma)[0]
+        Xmulti = convert_listlike_to_sets(Xmulti)
+        if self.verbose:
+            print("Done preprocessing.")
+        return labels_cost(Xnum=Xnum, Xcat=Xcat, Xmulti=Xmulti,
+                           centroids=self._enc_cluster_centroids,
+                           num_dissim=self.num_dissim,
+                           cat_dissim=self.cat_dissim,
+                           multi_dissim=self.multi_dissim,
+                           gamma_c=self.gamma_c, gamma_m=self.gamma_m)[0]
 
     @property
     def cluster_centroids_(self):
         if hasattr(self, '_enc_cluster_centroids'):
             return np.hstack((
                 self._enc_cluster_centroids[0],
-                decode_centroids(self._enc_cluster_centroids[1], self._enc_map)
+                decode_centroids(self._enc_cluster_centroids[1], self._enc_map),
+                self._enc_cluster_centroids[2]
             ))
-        raise AttributeError("'{}' object has no attribute 'cluster_centroids_' "
-                             "because the model is not yet fitted.")
+        raise AttributeError("'{}' object has no attribute "
+                             "'cluster_centroids_' because the model is not "
+                             "yet fitted.")
 
 
 def labels_cost(Xnum, Xcat, Xmulti,
@@ -238,7 +277,7 @@ def labels_cost(Xnum, Xcat, Xmulti,
                                membship=membship)
         multi_costs = multi_dissim(centroids[2], Xmulti[ipoint])
         # Gamma relates the categorical cost to the numerical cost.
-        tot_costs = (gamma_n * num_costs + 
+        tot_costs = (gamma_n * num_costs +
                      gamma_c * cat_costs +
                      gamma_m * multi_costs)
         clust = np.argmin(tot_costs)
@@ -251,8 +290,10 @@ def labels_cost(Xnum, Xcat, Xmulti,
     return labels, cost
 
 
-def k_prototypes(X, categorical, n_clusters, max_iter, num_dissim, cat_dissim,
-                 gamma, init, n_init, verbose, random_state, n_jobs, sample_weight=None):
+def k_prototypes(X, categorical, multi_valued, n_clusters, max_iter,
+                 num_dissim, cat_dissim, multi_dissim, gamma_c, gamma_m,
+                 init, n_init, verbose, random_state, n_jobs,
+                 sample_weight=None):
     """k-prototypes algorithm"""
     random_state = check_random_state(random_state)
     if sparse.issparse(X):
@@ -266,57 +307,67 @@ def k_prototypes(X, categorical, n_clusters, max_iter, num_dissim, cat_dissim,
         )
     if isinstance(categorical, int):
         categorical = [categorical]
-    assert len(categorical) != X.shape[1], \
-        "All columns are categorical, use k-modes instead of k-prototypes."
-    assert max(categorical) < X.shape[1], \
-        "Categorical index larger than number of columns."
+    if len(categorical) == X.shape[1]:
+        raise ValueError("All columns are categorical, use k-modes instead "
+                         "of k-prototypes.")
+    if max(categorical) > X.shape[1]:
+        raise ValueError("Categorical index larger than number of columns.")
 
-    ncatattrs = len(categorical)
-    nnumattrs = X.shape[1] - ncatattrs
+    # ncatattrs = len(categorical)
+    # nnumattrs = X.shape[1] - ncatattrs
     n_points = X.shape[0]
-    assert n_clusters <= n_points, f"Cannot have more clusters ({n_clusters}) " \
-                                   f"than data points ({n_points})."
+    if n_clusters > n_points:
+        raise ValueError(f"Cannot have more clusters ({n_clusters}) "
+                         f"than data points ({n_points}).")
 
-    Xnum, Xcat = _split_num_cat(X, categorical)
+    Xnum, Xcat, Xmulti = _split_num_cat_multi(x=X, cat_idxs=categorical,
+                                              multi_val_idxs=multi_valued)
     Xnum, Xcat = check_array(Xnum), check_array(Xcat, dtype=None)
 
     # Convert the categorical values in Xcat to integers for speed.
-    # Based on the unique values in Xcat, we can make a mapping to achieve this.
+    # Based on the unique values in Xcat, we can make a mapping to achieve it.
     Xcat, enc_map = encode_features(Xcat)
+
+    # Make sure that the contents of Xmulti are sets
+    Xmulti = convert_listlike_to_sets(Xmulti)
 
     # Are there more n_clusters than unique rows? Then set the unique
     # rows as initial values and skip iteration.
-    unique = get_unique_rows(X)
+    unique = get_unique_rows(X, source='extendedkproto')
     n_unique = unique.shape[0]
     if n_unique <= n_clusters:
         max_iter = 0
         n_init = 1
         n_clusters = n_unique
-        init = list(_split_num_cat(unique, categorical))
+        init = list(_split_num_cat_multi(unique, categorical, multi_valued))
         init[1], _ = encode_features(init[1], enc_map)
 
     # Estimate a good value for gamma, which determines the weighing of
     # categorical values in clusters (see Huang [1997]).
-    if gamma is None:
-        gamma = 0.5 * np.mean(Xnum.std(axis=0))
+    # if gamma is None:
+    #     gamma = 0.5 * np.mean(Xnum.std(axis=0))
 
     results = []
     seeds = random_state.randint(np.iinfo(np.int32).max, size=n_init)
     if n_jobs == 1:
         for init_no in range(n_init):
-            results.append(_k_prototypes_single(Xnum, Xcat, nnumattrs, ncatattrs,
+            results.append(_extn_k_proto_single(Xnum, Xcat, Xmulti,
                                                 n_clusters, n_points, max_iter,
-                                                num_dissim, cat_dissim, gamma,
-                                                init, init_no, verbose, seeds[init_no],
-                                                sample_weight))
+                                                num_dissim, cat_dissim,
+                                                multi_dissim, gamma_c, gamma_m,
+                                                init, init_no, verbose,
+                                                seeds[init_no], sample_weight))
     else:
         results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(_k_prototypes_single)(Xnum, Xcat, nnumattrs, ncatattrs,
+            delayed(_extn_k_proto_single)(Xnum, Xcat, Xmulti,
                                           n_clusters, n_points, max_iter,
-                                          num_dissim, cat_dissim, gamma,
-                                          init, init_no, verbose, seed, sample_weight)
+                                          num_dissim, cat_dissim,
+                                          multi_dissim, gamma_c, gamma_m,
+                                          init, init_no, verbose,
+                                          seeds[init_no], sample_weight)
             for init_no, seed in enumerate(seeds))
-    all_centroids, all_labels, all_costs, all_n_iters, all_epoch_costs = zip(*results)
+    (all_centroids, all_labels, all_costs,
+     all_n_iters, all_epoch_costs) = zip(*results)
 
     best = np.argmin(all_costs)
     if n_init > 1 and verbose:
@@ -324,11 +375,10 @@ def k_prototypes(X, categorical, n_clusters, max_iter, num_dissim, cat_dissim,
 
     # Note: return gamma in case it was automatically determined.
     return all_centroids[best], enc_map, all_labels[best], all_costs[best], \
-        all_n_iters[best], all_epoch_costs[best], gamma
+        all_n_iters[best], all_epoch_costs[best], gamma_c, gamma_m
 
 
 def _extn_k_proto_single(Xnum, Xcat, Xmulti,
-                         # nnumattrs, ncatattrs,
                          n_clusters, n_points,
                          max_iter, num_dissim, cat_dissim, multi_dissim,
                          gamma_c, gamma_m, init, init_no,
@@ -359,7 +409,6 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
             centroids = Xcat[seeds]
         elif isinstance(init, list):
             # Make sure inits are 2D arrays.
-            # TODO: Extend behavior to consider init[2], the multi-val attrs
             init = [np.atleast_2d(cur_init).T if len(cur_init.shape) == 1
                     else cur_init
                     for cur_init in init]
@@ -375,8 +424,16 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
             assert init[1].shape[1] == ncatattrs, \
                 "Wrong number of categorical attributes in init " \
                 f"({init[1].shape[1]}, should be {ncatattrs})."
+            assert init[2].shape[0] == n_clusters, \
+                "Wrong number of initial categorical centroids in init " \
+                f"({init[2].shape[0]}, should be {n_clusters})."
+            assert init[2].shape[1] == ncatattrs, \
+                "Wrong number of categorical attributes in init " \
+                f"({init[2].shape[1]}, should be {ncatattrs})."
+
             centroids = [np.asarray(init[0], dtype=np.float64),
                          np.asarray(init[1], dtype=np.uint16)]
+
         else:
             raise NotImplementedError("Initialization method not supported.")
 
@@ -457,7 +514,8 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
             centroids[0][ik, iattr] = cl_attr_sum[ik, iattr] / cl_memb_sum[ik]
         for iattr in range(ncatattrs):
             # Categorical update: mode of attributes
-            centroids[1][ik, iattr] = get_max_value_key(cl_attr_freq[ik][iattr])
+            centroids[1][ik, iattr] = \
+                get_max_value_key(cl_attr_freq[ik][iattr])
         for iattr in range(nmultiattrs):
             # Multi-valued update: proposed technique
             centroids[2][ik, iattr] = _compare_cl_to_gl_attribute_frequency(
@@ -490,6 +548,7 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
                                cl_memb_sum=cl_memb_sum,
                                cl_attr_freq=cl_attr_freq,
                                cl_multi_attr_freq=cl_multi_attr_freq,
+                               gl_multi_attr_freq=gl_multi_attr_freq,
                                membship=membship, num_dissim=num_dissim,
                                cat_dissim=cat_dissim,
                                multi_dissim=multi_dissim,
@@ -525,6 +584,7 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
                        cl_memb_sum: np.ndarray[np.float64],
                        cl_attr_freq: list[list[defaultdict]],
                        cl_multi_attr_freq: list[list[defaultdict]],
+                       gl_multi_attr_freq: list[list[defaultdict]],
                        membship: np.ndarray[np.bool_],
                        # Dissimilarity Functions
                        num_dissim: Callable,
@@ -537,6 +597,11 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
                        random_state,
                        sample_weight):
     """Single iteration of the k-prototypes algorithm"""
+    n_points = Xnum.shape[0]
+    if n_points != Xcat.shape[0] or n_points != Xmulti.shape[0]:
+        raise RuntimeError("Something has gone terribly wrong. Attribute "
+                           "matrices have different numbers of rows.")
+
     gamma_n = 1 - (gamma_c + gamma_m)
     moves = 0
     for ipoint in range(Xnum.shape[0]):
@@ -575,17 +640,31 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
         for iattr in range(len(Xnum[ipoint])):
             for curc in (clust, old_clust):
                 if cl_memb_sum[curc]:
-                    centroids[0][curc, iattr] = cl_attr_sum[curc, iattr] / cl_memb_sum[curc]
+                    centroids[0][curc, iattr] = (cl_attr_sum[curc, iattr] /
+                                                 cl_memb_sum[curc])
                 else:
                     centroids[0][curc, iattr] = 0.
-        
-        # TODO: Update the centroid values for the multi-valued attrs as well
+
+        # Could be integrated in the previous loop, but is left here
+        # for modularity and compartimentalisation.
+        for iattr in range(len(Xmulti[ipoint])):
+            # Based on the updated accounting variable, cl_multi_attr_freq
+            for curc in (clust, old_clust):
+                centroids[2][curc, iattr] = (
+                    _compare_cl_to_gl_attribute_frequency(
+                        cl_dict=cl_multi_attr_freq[curc][iattr],
+                        gl_dict=gl_multi_attr_freq[iattr],
+                        n_clust=cl_memb_sum[curc],
+                        n_points=n_points
+                        )
+                    )
 
         # In case of an empty cluster, reinitialize with a random point
         # from largest cluster.
         if not cl_memb_sum[old_clust]:
             from_clust = membship.sum(axis=1).argmax()
-            choices = [ii for ii, ch in enumerate(membship[from_clust, :]) if ch]
+            choices = [ii for ii, ch in enumerate(
+                membship[from_clust, :]) if ch]
             rindx = random_state.choice(choices)
 
             cl_attr_sum, cl_memb_sum = _move_point_num(
@@ -596,9 +675,13 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
                 Xcat[rindx], rindx, old_clust, from_clust,
                 cl_attr_freq, membship, centroids[1], weight
             )
+            cl_multi_attr_freq = _move_point_multi(
+                Xmulti[rindx], old_clust, from_clust,
+                cl_multi_attr_freq, weight
+            )
 
     return (centroids, cl_attr_sum, cl_memb_sum, cl_attr_freq,
-           cl_multi_attr_freq, membship, moves)
+            cl_multi_attr_freq, membship, moves)
 
 
 def _compare_cl_to_gl_attribute_frequency(cl_dict, gl_dict, n_clust, n_points):
@@ -608,7 +691,7 @@ def _compare_cl_to_gl_attribute_frequency(cl_dict, gl_dict, n_clust, n_points):
             freq_delta = (cl_dict[item])/n_clust - (gl_dict[item])/n_points
             if freq_delta >= 0.001:
                 modal_set.add(item)
-    
+
     return modal_set
 
 
@@ -633,12 +716,11 @@ def _move_point_multi(point, to_clust, from_clust,
         to_attr_counts = cl_multi_attr_freq[to_clust][iattr]
         from_attr_counts = cl_multi_attr_freq[from_clust][iattr]
 
-        for item in curattr.keys():
+        for item in curattr:
             to_attr_counts[item] += sample_weight
             from_attr_counts[item] -= sample_weight
-    
-    return cl_multi_attr_freq
 
+    return cl_multi_attr_freq
 
 
 def _split_num_cat_multi(x, cat_idxs, multi_val_idxs):
@@ -648,10 +730,10 @@ def _split_num_cat_multi(x, cat_idxs, multi_val_idxs):
     :param x: Feature matrix
     :param categorical: Indices of categorical columns
     """
-    num_idxs = [i for i in range(x.shape[1]) 
+    num_idxs = [i for i in range(x.shape[1])
                 if i not in (cat_idxs + multi_val_idxs)]
     Xnum = np.asanyarray(x[:, num_idxs]).astype(np.float64)
-  
+
     Xcat = np.asanyarray(x[:, cat_idxs])
     Xmulti = np.asanyarray(x[:, multi_val_idxs])
     return Xnum, Xcat, Xmulti
