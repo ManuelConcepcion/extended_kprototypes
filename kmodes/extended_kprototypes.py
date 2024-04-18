@@ -117,8 +117,8 @@ class ExtendedKPrototypes(kmodes.KModes):
 
     def __init__(self, n_clusters=8, max_iter=100, num_dissim=euclidean_dissim,
                  cat_dissim=matching_dissim, multi_dissim=jaccard_dissim_sets,
-                 init='Cao', n_init=10, gamma_c=0.33, gamma_m=0.33, verbose=0,
-                 random_state=None, n_jobs=1):
+                 init='Cao', n_init=10, gamma_c=0.33, gamma_m=0.33,
+                 theta=0.001, verbose=0, random_state=None, n_jobs=1):
 
         super(ExtendedKPrototypes, self).__init__(n_clusters, max_iter,
                                                   cat_dissim,
@@ -129,6 +129,7 @@ class ExtendedKPrototypes(kmodes.KModes):
         self.multi_dissim = multi_dissim
         self.gamma_c = gamma_c
         self.gamma_m = gamma_m
+        self.theta = theta
         self.n_init = n_init
         if isinstance(self.init, list) and self.n_init > 1:
             if self.verbose:
@@ -191,6 +192,7 @@ class ExtendedKPrototypes(kmodes.KModes):
                 verbose=self.verbose,
                 random_state=random_state,
                 n_jobs=self.n_jobs,
+                theta=self.theta,
                 sample_weight=sample_weight,
             )
 
@@ -230,13 +232,13 @@ class ExtendedKPrototypes(kmodes.KModes):
         if self.verbose:
             print('Preprocessing')
         X = pandas_to_numpy(X)
-        Xnum, Xcat, Xmulti = _split_num_cat_multi(X, categorical, multi_valued)
-        Xnum, Xcat = check_array(Xnum), check_array(Xcat, dtype=None)
-        Xcat, _ = encode_features(Xcat, enc_map=self._enc_map)
-        Xmulti = convert_listlike_to_sets(Xmulti)
+        xnum, xcat, xmulti = _split_num_cat_multi(X, categorical, multi_valued)
+        xnum, xcat = check_array(xnum), check_array(xcat, dtype=None)
+        xcat, _ = encode_features(xcat, enc_map=self._enc_map)
+        xmulti = convert_listlike_to_sets(xmulti)
         if self.verbose:
             print("Done preprocessing.")
-        return labels_cost(Xnum=Xnum, Xcat=Xcat, Xmulti=Xmulti,
+        return labels_cost(xnum=xnum, xcat=xcat, xmulti=xmulti,
                            centroids=self._enc_cluster_centroids,
                            num_dissim=self.num_dissim,
                            cat_dissim=self.cat_dissim,
@@ -248,7 +250,8 @@ class ExtendedKPrototypes(kmodes.KModes):
         if hasattr(self, '_enc_cluster_centroids'):
             return np.hstack((
                 self._enc_cluster_centroids[0],
-                decode_centroids(self._enc_cluster_centroids[1], self._enc_map),
+                decode_centroids(self._enc_cluster_centroids[1],
+                                 self._enc_map),
                 self._enc_cluster_centroids[2]
             ))
         raise AttributeError("'{}' object has no attribute "
@@ -256,7 +259,7 @@ class ExtendedKPrototypes(kmodes.KModes):
                              "yet fitted.")
 
 
-def labels_cost(Xnum, Xcat, Xmulti,
+def labels_cost(xnum, xcat, xmulti,
                 centroids, num_dissim, cat_dissim, multi_dissim,
                 gamma_c, gamma_m,
                 membship=None, sample_weight=None):
@@ -265,17 +268,17 @@ def labels_cost(Xnum, Xcat, Xmulti,
     a list of centroids for the k-prototypes algorithm.
     """
     gamma_n = 1 - (gamma_c + gamma_m)
-    n_points = Xnum.shape[0]
-    Xnum = check_array(Xnum)
+    n_points = xnum.shape[0]
+    xnum = check_array(xnum)
 
     cost = 0.
     labels = np.empty(n_points, dtype=np.uint16)
     for ipoint in range(n_points):
         # Numerical cost = sum of Euclidean distances
-        num_costs = num_dissim(centroids[0], Xnum[ipoint])
-        cat_costs = cat_dissim(centroids[1], Xcat[ipoint], X=Xcat,
+        num_costs = num_dissim(centroids[0], xnum[ipoint])
+        cat_costs = cat_dissim(centroids[1], xcat[ipoint], X=xcat,
                                membship=membship)
-        multi_costs = multi_dissim(centroids[2], Xmulti[ipoint])
+        multi_costs = multi_dissim(centroids[2], xmulti[ipoint])
         # Gamma relates the categorical cost to the numerical cost.
         tot_costs = (gamma_n * num_costs +
                      gamma_c * cat_costs +
@@ -292,7 +295,7 @@ def labels_cost(Xnum, Xcat, Xmulti,
 
 def k_prototypes(X, categorical, multi_valued, n_clusters, max_iter,
                  num_dissim, cat_dissim, multi_dissim, gamma_c, gamma_m,
-                 init, n_init, verbose, random_state, n_jobs,
+                 init, n_init, verbose, random_state, n_jobs, theta,
                  sample_weight=None):
     """k-prototypes algorithm"""
     random_state = check_random_state(random_state)
@@ -320,16 +323,16 @@ def k_prototypes(X, categorical, multi_valued, n_clusters, max_iter,
         raise ValueError(f"Cannot have more clusters ({n_clusters}) "
                          f"than data points ({n_points}).")
 
-    Xnum, Xcat, Xmulti = _split_num_cat_multi(x=X, cat_idxs=categorical,
+    xnum, xcat, xmulti = _split_num_cat_multi(x=X, cat_idxs=categorical,
                                               multi_val_idxs=multi_valued)
-    Xnum, Xcat = check_array(Xnum), check_array(Xcat, dtype=None)
+    xnum, xcat = check_array(xnum), check_array(xcat, dtype=None)
 
-    # Convert the categorical values in Xcat to integers for speed.
-    # Based on the unique values in Xcat, we can make a mapping to achieve it.
-    Xcat, enc_map = encode_features(Xcat)
+    # Convert the categorical values in xcat to integers for speed.
+    # Based on the unique values in xcat, we can make a mapping to achieve it.
+    xcat, enc_map = encode_features(xcat)
 
-    # Make sure that the contents of Xmulti are sets
-    Xmulti = convert_listlike_to_sets(Xmulti)
+    # Make sure that the contents of xmulti are sets
+    xmulti = convert_listlike_to_sets(xmulti)
 
     # Are there more n_clusters than unique rows? Then set the unique
     # rows as initial values and skip iteration.
@@ -345,26 +348,27 @@ def k_prototypes(X, categorical, multi_valued, n_clusters, max_iter,
     # Estimate a good value for gamma, which determines the weighing of
     # categorical values in clusters (see Huang [1997]).
     # if gamma is None:
-    #     gamma = 0.5 * np.mean(Xnum.std(axis=0))
+    #     gamma = 0.5 * np.mean(xnum.std(axis=0))
 
     results = []
     seeds = random_state.randint(np.iinfo(np.int32).max, size=n_init)
     if n_jobs == 1:
         for init_no in range(n_init):
-            results.append(_extn_k_proto_single(Xnum, Xcat, Xmulti,
+            results.append(_extn_k_proto_single(xnum, xcat, xmulti,
                                                 n_clusters, n_points, max_iter,
                                                 num_dissim, cat_dissim,
                                                 multi_dissim, gamma_c, gamma_m,
                                                 init, init_no, verbose,
-                                                seeds[init_no], sample_weight))
+                                                seeds[init_no], theta,
+                                                sample_weight))
     else:
         results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(_extn_k_proto_single)(Xnum, Xcat, Xmulti,
+            delayed(_extn_k_proto_single)(xnum, xcat, xmulti,
                                           n_clusters, n_points, max_iter,
                                           num_dissim, cat_dissim,
                                           multi_dissim, gamma_c, gamma_m,
                                           init, init_no, verbose,
-                                          seeds[init_no], sample_weight)
+                                          seeds[init_no], theta, sample_weight)
             for init_no, seed in enumerate(seeds))
     (all_centroids, all_labels, all_costs,
      all_n_iters, all_epoch_costs) = zip(*results)
@@ -378,18 +382,19 @@ def k_prototypes(X, categorical, multi_valued, n_clusters, max_iter,
         all_n_iters[best], all_epoch_costs[best], gamma_c, gamma_m
 
 
-def _extn_k_proto_single(Xnum, Xcat, Xmulti,
+def _extn_k_proto_single(xnum, xcat, xmulti,
                          n_clusters, n_points,
                          max_iter, num_dissim, cat_dissim, multi_dissim,
                          gamma_c, gamma_m, init, init_no,
-                         verbose, random_state, sample_weight=None):
+                         verbose, random_state, theta,
+                         sample_weight=None):
     # For numerical part of initialization, we don't have a guarantee
     # that there is not an empty cluster, so we need to retry until
     # there is none.
     gamma_n = 1 - (gamma_c + gamma_m)
-    nnumattrs = Xnum.shape[1]
-    ncatattrs = Xcat.shape[1]
-    nmultiattrs = Xmulti.shape[1]
+    nnumattrs = xnum.shape[1]
+    ncatattrs = xcat.shape[1]
+    nmultiattrs = xmulti.shape[1]
 
     random_state = check_random_state(random_state)
     init_tries = 0
@@ -401,12 +406,12 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
         if verbose:
             print("Init: initializing centroids")
         if isinstance(init, str) and init.lower() == 'huang':
-            centroids = init_huang(Xcat, n_clusters, cat_dissim, random_state)
+            centroids = init_huang(xcat, n_clusters, cat_dissim, random_state)
         elif isinstance(init, str) and init.lower() == 'cao':
-            centroids = init_cao(Xcat, n_clusters, cat_dissim)
+            centroids = init_cao(xcat, n_clusters, cat_dissim)
         elif isinstance(init, str) and init.lower() == 'random':
             seeds = random_state.choice(range(n_points), n_clusters)
-            centroids = Xcat[seeds]
+            centroids = xcat[seeds]
         elif isinstance(init, list):
             # Make sure inits are 2D arrays.
             init = [np.atleast_2d(cur_init).T if len(cur_init.shape) == 1
@@ -441,13 +446,13 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
             # Numerical is initialized by drawing from normal distribution,
             # categorical following the k-modes methods, and multi following
             # the proposed extension to the Cao initialization logic.
-            meanx = np.mean(Xnum, axis=0)
-            stdx = np.std(Xnum, axis=0)
+            meanx = np.mean(xnum, axis=0)
+            stdx = np.std(xnum, axis=0)
             centroids = [   # 0:num, 1:cat, 2:multi
                 meanx + random_state.randn(n_clusters, nnumattrs) * stdx,
                 centroids,
                 # Add multi-categorical part
-                init_cao_multi(Xmulti, n_clusters=n_clusters,
+                init_cao_multi(xmulti, n_clusters=n_clusters,
                                dissim=multi_dissim)
             ]
 
@@ -466,28 +471,28 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
                         for _ in range(n_clusters)]
 
         cl_multi_attr_freq = [[defaultdict(float)
-                               for _ in range(Xmulti.shape[1])]
+                               for _ in range(xmulti.shape[1])]
                               for _ in range(n_clusters)]
         gl_multi_attr_freq = [defaultdict(float)
-                              for _ in range(Xmulti.shape[1])]
+                              for _ in range(xmulti.shape[1])]
         # Go point by point to fill these "accounting" matrices and dicts
         for ipoint in range(n_points):
             weight = sample_weight[ipoint] if sample_weight is not None else 1
             # Initial assignment to clusters
             clust = np.argmin(
-                gamma_n * num_dissim(centroids[0], Xnum[ipoint]) +
+                gamma_n * num_dissim(centroids[0], xnum[ipoint]) +
                 gamma_c * cat_dissim(
-                    centroids[1], Xcat[ipoint], X=Xcat, membship=membship) +
-                gamma_m * multi_dissim(centroids[2], Xmulti[ipoint])
+                    centroids[1], xcat[ipoint], X=xcat, membship=membship) +
+                gamma_m * multi_dissim(centroids[2], xmulti[ipoint])
             )
             membship[clust, ipoint] = 1
             cl_memb_sum[clust] += weight
             # Count attribute values per cluster.
-            for iattr, curattr in enumerate(Xnum[ipoint]):
+            for iattr, curattr in enumerate(xnum[ipoint]):
                 cl_attr_sum[clust, iattr] += curattr * weight
-            for iattr, curattr in enumerate(Xcat[ipoint]):
+            for iattr, curattr in enumerate(xcat[ipoint]):
                 cl_attr_freq[clust][iattr][curattr] += weight
-            for iattr, curattr in enumerate(Xmulti[ipoint]):
+            for iattr, curattr in enumerate(xmulti[ipoint]):
                 # curattr is a set in this case
                 for item in curattr:
                     gl_multi_attr_freq[iattr][item] += weight
@@ -522,7 +527,8 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
                 cl_dict=cl_multi_attr_freq[ik][iattr],
                 gl_dict=gl_multi_attr_freq[iattr],
                 n_clust=cl_memb_sum[ik],
-                n_points=n_points
+                n_points=n_points,
+                theta=theta
             )
 
     # _____ ITERATION _____
@@ -532,7 +538,7 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
     labels = None
     converged = False
 
-    _, cost = labels_cost(Xnum=Xnum, Xcat=Xcat, Xmulti=Xmulti,
+    _, cost = labels_cost(xnum=xnum, xcat=xcat, xmulti=xmulti,
                           centroids=centroids, num_dissim=num_dissim,
                           cat_dissim=cat_dissim, multi_dissim=multi_dissim,
                           gamma_c=gamma_c, gamma_m=gamma_m, membship=membship,
@@ -543,7 +549,7 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
         itr += 1
         (centroids, cl_attr_sum, cl_memb_sum, cl_attr_freq,
          cl_multi_attr_freq, membship, moves) = \
-            _extn_k_proto_iter(Xnum=Xnum, Xcat=Xcat, Xmulti=Xmulti,
+            _extn_k_proto_iter(xnum=xnum, xcat=xcat, xmulti=xmulti,
                                centroids=centroids, cl_attr_sum=cl_attr_sum,
                                cl_memb_sum=cl_memb_sum,
                                cl_attr_freq=cl_attr_freq,
@@ -554,10 +560,11 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
                                multi_dissim=multi_dissim,
                                gamma_c=gamma_c, gamma_m=gamma_m,
                                random_state=random_state,
-                               sample_weight=sample_weight)
+                               sample_weight=sample_weight,
+                               theta=theta)
 
         # All points seen in this iteration
-        labels, ncost = labels_cost(Xnum=Xnum, Xcat=Xcat, Xmulti=Xmulti,
+        labels, ncost = labels_cost(xnum=xnum, xcat=xcat, xmulti=xmulti,
                                     centroids=centroids, num_dissim=num_dissim,
                                     cat_dissim=cat_dissim,
                                     multi_dissim=multi_dissim,
@@ -574,10 +581,10 @@ def _extn_k_proto_single(Xnum, Xcat, Xmulti,
     return centroids, labels, cost, itr, epoch_costs
 
 
-def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
-                       Xnum: np.ndarray,
-                       Xcat: np.ndarray,
-                       Xmulti: np.ndarray,
+def _extn_k_proto_iter(  # Pre-Separated Attribute Arrays
+                       xnum: np.ndarray,
+                       xcat: np.ndarray,
+                       xmulti: np.ndarray,
                        # "Accounting" matrices
                        centroids: list[np.ndarray],
                        cl_attr_sum: np.ndarray[np.float64],
@@ -595,22 +602,23 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
                        gamma_m: float,
                        # Miscellaneous Arguments
                        random_state,
-                       sample_weight):
+                       sample_weight,
+                       theta: float):
     """Single iteration of the k-prototypes algorithm"""
-    n_points = Xnum.shape[0]
-    if n_points != Xcat.shape[0] or n_points != Xmulti.shape[0]:
+    n_points = xnum.shape[0]
+    if n_points != xcat.shape[0] or n_points != xmulti.shape[0]:
         raise RuntimeError("Something has gone terribly wrong. Attribute "
                            "matrices have different numbers of rows.")
 
     gamma_n = 1 - (gamma_c + gamma_m)
     moves = 0
-    for ipoint in range(Xnum.shape[0]):
+    for ipoint in range(xnum.shape[0]):
         weight = sample_weight[ipoint] if sample_weight is not None else 1
         clust = np.argmin(
-            gamma_n * num_dissim(centroids[0], Xnum[ipoint]) +
+            gamma_n * num_dissim(centroids[0], xnum[ipoint]) +
             gamma_c * cat_dissim(
-                centroids[1], Xcat[ipoint], X=Xcat, membship=membship) +
-            gamma_m * multi_dissim(centroids[2], Xmulti[ipoint])
+                centroids[1], xcat[ipoint], X=xcat, membship=membship) +
+            gamma_m * multi_dissim(centroids[2], xmulti[ipoint])
         )
         if membship[clust, ipoint]:
             # Point is already in its right place.
@@ -623,21 +631,21 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
         # Note that membship gets updated by kmodes.move_point_cat.
         # move_point_num only updates things specific to the k-means part.
         cl_attr_sum, cl_memb_sum = _move_point_num(
-            Xnum[ipoint], clust, old_clust, cl_attr_sum, cl_memb_sum, weight
+            xnum[ipoint], clust, old_clust, cl_attr_sum, cl_memb_sum, weight
         )
         cl_multi_attr_freq = _move_point_multi(
-            Xmulti[ipoint], clust, old_clust, cl_multi_attr_freq, weight
+            xmulti[ipoint], clust, old_clust, cl_multi_attr_freq, weight
         )
         # Update the actual centroids and the categorical "accounting" vars
         # noinspection PyProtectedMember
         cl_attr_freq, membship, centroids[1] = kmodes._move_point_cat(
-            Xcat[ipoint], ipoint, clust, old_clust,
+            xcat[ipoint], ipoint, clust, old_clust,
             cl_attr_freq, membship, centroids[1], weight
         )
 
         # Update old and new centroids for numerical attributes using
         # the means and sums of all values
-        for iattr in range(len(Xnum[ipoint])):
+        for iattr in range(len(xnum[ipoint])):
             for curc in (clust, old_clust):
                 if cl_memb_sum[curc]:
                     centroids[0][curc, iattr] = (cl_attr_sum[curc, iattr] /
@@ -647,7 +655,7 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
 
         # Could be integrated in the previous loop, but is left here
         # for modularity and compartimentalisation.
-        for iattr in range(len(Xmulti[ipoint])):
+        for iattr in range(len(xmulti[ipoint])):
             # Based on the updated accounting variable, cl_multi_attr_freq
             for curc in (clust, old_clust):
                 centroids[2][curc, iattr] = (
@@ -655,7 +663,8 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
                         cl_dict=cl_multi_attr_freq[curc][iattr],
                         gl_dict=gl_multi_attr_freq[iattr],
                         n_clust=cl_memb_sum[curc],
-                        n_points=n_points
+                        n_points=n_points,
+                        theta=theta
                         )
                     )
 
@@ -668,15 +677,15 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
             rindx = random_state.choice(choices)
 
             cl_attr_sum, cl_memb_sum = _move_point_num(
-                Xnum[rindx], old_clust, from_clust, cl_attr_sum, cl_memb_sum,
+                xnum[rindx], old_clust, from_clust, cl_attr_sum, cl_memb_sum,
                 weight
             )
             cl_attr_freq, membship, centroids[1] = kmodes._move_point_cat(
-                Xcat[rindx], rindx, old_clust, from_clust,
+                xcat[rindx], rindx, old_clust, from_clust,
                 cl_attr_freq, membship, centroids[1], weight
             )
             cl_multi_attr_freq = _move_point_multi(
-                Xmulti[rindx], old_clust, from_clust,
+                xmulti[rindx], old_clust, from_clust,
                 cl_multi_attr_freq, weight
             )
 
@@ -684,12 +693,13 @@ def _extn_k_proto_iter(# Pre-Separated Attribute Arrays
             cl_multi_attr_freq, membship, moves)
 
 
-def _compare_cl_to_gl_attribute_frequency(cl_dict, gl_dict, n_clust, n_points):
+def _compare_cl_to_gl_attribute_frequency(cl_dict, gl_dict, n_clust, n_points,
+                                          theta: float = 0.001):
     modal_set = set()
     for item in cl_dict.keys():
         if item in gl_dict:
             freq_delta = (cl_dict[item])/n_clust - (gl_dict[item])/n_points
-            if freq_delta >= 0.001:
+            if freq_delta >= theta:
                 modal_set.add(item)
 
     return modal_set
@@ -732,8 +742,8 @@ def _split_num_cat_multi(x, cat_idxs, multi_val_idxs):
     """
     num_idxs = [i for i in range(x.shape[1])
                 if i not in (cat_idxs + multi_val_idxs)]
-    Xnum = np.asanyarray(x[:, num_idxs]).astype(np.float64)
+    xnum = np.asanyarray(x[:, num_idxs]).astype(np.float64)
 
-    Xcat = np.asanyarray(x[:, cat_idxs])
-    Xmulti = np.asanyarray(x[:, multi_val_idxs])
-    return Xnum, Xcat, Xmulti
+    xcat = np.asanyarray(x[:, cat_idxs])
+    xmulti = np.asanyarray(x[:, multi_val_idxs])
+    return xnum, xcat, xmulti
