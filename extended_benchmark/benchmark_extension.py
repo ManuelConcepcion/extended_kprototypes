@@ -1,64 +1,24 @@
+"""Provide the necessary tools for benchmarking Extended K-Prototypes."""
 # Imports
 import time
-from typing import Any
+from typing import Any, Optional
 from itertools import combinations_with_replacement
 
 import numpy as np
 import pandas as pd
 
+from scipy.spatial.distance import pdist, squareform
 from sklearn.datasets import make_classification
 from sklearn.decomposition import PCA
-from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score
+from sklearn.metrics import \
+    adjusted_rand_score, adjusted_mutual_info_score, silhouette_score
 
 from kmodes.kprototypes import KPrototypes
 from kmodes.extended_kprototypes import ExtendedKPrototypes
+from kmodes.util.dissim import jaccard_dissim_sets
 
 # Constants
 VALID_PREPROCESS_MODES = ('naive', 'one-hot', 'one-hot-pca', 'extended')
-# TODO: Move this elsewhere
-sample_difficulty_configurations = {
-     'easy': {
-             'n_samples': 2000,
-             'n_clusters': 3,
-             # Features
-             'n_numeric_features': 5,
-             'n_categorical_features': 5,
-             'categorical_cardinalities': [6, 6, 6, 6, 6],
-             'n_multival_features': 5,
-             'multival_vocab_lens': [(3, 3, 3),  # How many vocab items
-                                     (3, 3, 3),  # are associated to a
-                                     (3, 3, 3),  # cluster.
-                                     (3, 3, 3),
-                                     (3, 3, 3)],
-             # Difficulty params
-             'separability': 3.0,
-             'multival_intersections': 1,
-             'noise': 0.01,
-             'class_weights': [0.33, 0.33],
-             # Approach Settings
-             'approach_settings': {
-                'naive': {
-                    'gamma': None
-                },
-                'one-hot': {
-                    'gamma': None,
-                    'max_dummies': 100
-                },
-                'one-hot-pca': {
-                    'gamma': None,
-                    'reduced_dimensions': 0.25
-                },
-                'extended': {
-                    'gamma_c': 0.33,
-                    'gamma_m': 0.33,
-                    'theta': 0.001
-                }
-               },
-              },
-     'medium': None,
-     'hard': None
-}
-
 PARAM_GUIDE = {
     'n_samples': int,
     'n_clusters': int,
@@ -461,6 +421,43 @@ class Experiment:
         return self._consolidate_attribute_arrays(all_attributes,
                                                   target=y_true)
 
+    def average_silhouette_score(self,
+                                 data: pd.DataFrame,
+                                 labels: np.ndarray,
+                                 categorical: list[int],
+                                 multi_valued: Optional[list[int]] = None,
+                                 kp_gamma: Optional[float] = None,
+                                 gamma_c: Optional[float] = None,
+                                 gamma_m: Optional[float] = None):
+        """Compute the average silhouette score for given data and partition"""
+        # Construct the joint distance matrix
+        xcat = data.iloc[:, categorical].values
+        distance_matrix_cat = pdist(xcat, custom_hamming_dist)
+
+        if multi_valued is None:
+            num_idxs = [idx for idx in range(data.shape[1])
+                        if idx not in categorical]
+            xnum = data.iloc[:, num_idxs].values
+
+            distance_matrix_num = pdist(xnum)
+            distance_matrix = \
+                squareform(distance_matrix_cat*kp_gamma + distance_matrix_num)
+        else:
+            gamma_n = 1 - gamma_c - gamma_m
+
+            num_idxs = [idx for idx in range(data.shape[1])
+                        if idx not in categorical+multi_valued]
+            xnum = data.iloc[:, num_idxs].values
+            xmulti = data.iloc[:, multi_valued].values
+
+            distance_matrix_num = pdist(xnum)
+            distance_matrix_multi = pdist(xmulti, jaccard_dissim_sets)
+            distance_matrix = squareform(distance_matrix_cat*gamma_c +
+                                         distance_matrix_num*gamma_n +
+                                         distance_matrix_multi*gamma_m)
+
+        return silhouette_score(distance_matrix, labels, metric="precomputed")
+
     def run_experiment(self):
         """Run an experiment configuration over the approaches provided."""
         if self.data is None:
@@ -506,13 +503,24 @@ class Experiment:
                     n_clusters=self.benchmarking_config['n_clusters'],
                     gamma_c=gamma_c,
                     gamma_m=gamma_m,
-                    theta=theta
+                    theta=theta,
+                    random_state=self.random_state
                 )
                 start = time.perf_counter()
                 kp.fit(approaches_data_dict[approach],
                        categorical=self.categorical_indexes,
                        multi_valued=self.multival_indexes)
                 stop = time.perf_counter()
+
+                # Calc the silhouette score for the resulting clustering
+                silhouette_result = self.average_silhouette_score(
+                    data=approaches_data_dict[approach],
+                    labels=kp.labels_,
+                    categorical=self.categorical_indexes,
+                    multi_valued=self.multival_indexes,
+                    gamma_c=kp.gamma_c,
+                    gamma_m=kp.gamma_m
+                )
             else:
                 gamma = (self.benchmarking_config['approach_settings']
                          [approach]['gamma'])
@@ -521,14 +529,23 @@ class Experiment:
 
                 kp = KPrototypes(
                     n_clusters=self.benchmarking_config['n_clusters'],
-                    gamma=gamma
+                    gamma=gamma, random_state=self.random_state
                     )
                 start = time.perf_counter()
                 kp.fit(approaches_data_dict[approach],
                        categorical=approaches_cat_idxs_dict[approach])
                 stop = time.perf_counter()
 
+                silhouette_result = self.average_silhouette_score(
+                    data=approaches_data_dict[approach],
+                    labels=kp.labels_,
+                    categorical=approaches_cat_idxs_dict[approach],
+                    kp_gamma=kp.gamma
+                )
+
             approaches_results[approach]['clustering_time'] = stop-start
+            approaches_results[approach]['sum_of_times'] = (
+                approaches_results[approach]['preprocess_time'] + (stop-start))
             approaches_results[approach]['n_iter'] = kp.n_iter_
 
             predicted_labels = kp.labels_
@@ -538,6 +555,62 @@ class Experiment:
             approaches_results[approach]['ARI'] = \
                 adjusted_rand_score(labels_true=self.true_labels,
                                     labels_pred=predicted_labels)
+            approaches_results[approach]['Silhouette Index'] = silhouette_result
+
             approaches_results[approach]['centroids'] = kp.cluster_centroids_
 
         return approaches_results
+
+    def experiment_across_values(self,
+                                 base_config: dict,
+                                 random_states: list[int],
+                                 **kwargs):
+        """
+        Define a number of keys to change iteratively across an otherwise
+        static experiment configuration. The base configuration must be valid.
+        This function works linearly, such that all arguments[i] will be tried
+        at iteration i and no more.
+        """
+        config = self._validate_config(base_config, PARAM_GUIDE)
+
+        # Check that kwargs have the same length.
+        value_lens = []
+        for value in kwargs.values():
+            value_lens.append(len(value))
+        if len(set(value_lens)) > 1:
+            raise ValueError("One or more of the provided arguments has a "
+                             "mismatched length with the rest.")
+        # Check there are enough random_states.
+        if len(random_states) != value_lens[0]:
+            raise ValueError("A random_state int must be provided for every "
+                             f"new parameter configuration. {value_lens[0]} "
+                             "configurations were provided with "
+                             f"{len(random_states)} random states.")
+
+        # Iterate over each provided configuration
+        n_iter = value_lens[0]
+        results = []
+
+        for i in range(n_iter):
+            # Repopulate the config dict as needed.
+            for key, value in kwargs.items():
+                if key not in config.keys():
+                    raise KeyError(f"Argument {key} is not present in the "
+                                   "base_config dictionary.")
+                config[key] = value[i]
+
+                self.data = None
+                self.random_state = random_states[i]
+                self.benchmarking_config = config
+
+                results.append(self.run_experiment())
+
+        return results
+
+
+def custom_hamming_dist(a, b):
+    """
+    Scipy's pdist does not support dtype object and I am not encoding the sets
+    for the naive approach.
+    """
+    return np.sum(np.vectorize(lambda x, y: x == y)(a, b)) / a.shape[0]
