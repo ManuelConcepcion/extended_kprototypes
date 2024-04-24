@@ -113,6 +113,8 @@ class Preprocessor:
         # Preserve only the top-k frequent dummies
         if cut_dummies:
             out_df = self._cut_dummies(out_df, new_categorical_indexes)
+            new_categorical_indexes = [icol for icol in range(out_df.shape[1])
+                                       if icol not in num_indexes]
 
         return out_df, new_categorical_indexes
 
@@ -549,13 +551,17 @@ class Experiment:
             approaches_results[approach]['n_iter'] = kp.n_iter_
 
             predicted_labels = kp.labels_
-            approaches_results[approach]['MIS'] = \
-                adjusted_mutual_info_score(labels_true=self.true_labels,
-                                           labels_pred=predicted_labels)
-            approaches_results[approach]['ARI'] = \
-                adjusted_rand_score(labels_true=self.true_labels,
-                                    labels_pred=predicted_labels)
-            approaches_results[approach]['Silhouette Index'] = silhouette_result
+            
+            if self.true_labels is not None:
+                approaches_results[approach]['MIS'] = \
+                    adjusted_mutual_info_score(labels_true=self.true_labels,
+                                            labels_pred=predicted_labels)
+                approaches_results[approach]['ARI'] = \
+                    adjusted_rand_score(labels_true=self.true_labels,
+                                        labels_pred=predicted_labels)
+            
+            approaches_results[approach]['Silhouette Index'] = \
+                silhouette_result
 
             approaches_results[approach]['centroids'] = kp.cluster_centroids_
 
@@ -564,6 +570,7 @@ class Experiment:
     def experiment_across_values(self,
                                  base_config: dict,
                                  random_states: list[int],
+                                 given_data: Optional[pd.DataFrame] = None,
                                  **kwargs):
         """
         Define a number of keys to change iteratively across an otherwise
@@ -599,11 +606,11 @@ class Experiment:
                                    "base_config dictionary.")
                 config[key] = value[i]
 
-                self.data = None
-                self.random_state = random_states[i]
-                self.benchmarking_config = config
+            self.data = given_data
+            self.random_state = random_states[i]
+            self.benchmarking_config = config
 
-                results.append(self.run_experiment())
+            results.append(self.run_experiment())
 
         return results
 
