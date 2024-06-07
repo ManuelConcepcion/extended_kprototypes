@@ -60,3 +60,6 @@ target/
 
 .idea/
 examples/benchmark_extension.ipynb
+
+# Experiment Results
+*.pkl
