@@ -105,6 +105,9 @@ def jaccard_dissim_sets(a, b, **__):
         # All other cases
         reference_axis = 1
 
+    # Add an assert for testing for now, because I think this logic is faster
+    assert reference_axis == int(not (len(a.shape) == 1 and len(b.shape) == 1))
+
     n_attrs = a.shape[reference_axis]
     return n_attrs - np.sum(
             np.vectorize(lambda x, y:
