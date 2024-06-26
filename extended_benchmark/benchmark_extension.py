@@ -260,12 +260,16 @@ class Experiment:
     @staticmethod
     def _assign_categorical_features(class_labels: np.ndarray,
                                      cardinalities: list,
-                                     random_state):
-        """Create the categorical features for an existing partition."""
+                                     random_state) -> tuple[np.ndarray,
+                                                            list[dict]]:
+        """
+        Create the categorical features for an existing partition in a
+        deterministic fashion, given some clusters and target cardinalities.
+        """
         n_clusters = len(np.unique(class_labels))
         random_generator = np.random.default_rng(seed=random_state)
-        cluster_classes_keys = []
-        categorical_attribute_arrays = []
+        cluster_classes_keys = []           # List of dicts
+        categorical_attribute_arrays = []   # List of np.ndarrays
 
         for card in cardinalities:
             cluster_to_class = dict()
@@ -306,7 +310,8 @@ class Experiment:
         """
         Create multi-valued attributes from class labels, the lengths of the
         vocabulary subsets that are assigned to each label, and the degree to
-        which pairwise clusters should have intersections.
+        which pairwise clusters should have intersections. Results are
+        deterministic.
 
         Arguments
         ---------
@@ -361,6 +366,81 @@ class Experiment:
 
         return (np.stack(multi_valued_attribute_arrays, axis=1),
                 attribute_label_dicts)
+
+    @staticmethod
+    def _sample_categorical_attributes(
+            cluster_assignment_vector: np.ndarray[int],
+            category_distributions: tuple[list[list[float]]],
+            n_categorical_features: int,
+            categorical_cardinalities: list[int],
+            n_clusters: int,
+            random_generator: np.random.Generator,
+            round_digits: int = 5):
+        """
+        Use categorical distributions to sample the categorical attributes of
+        a dataset. A category distribution is specified for each cluster and
+        attribute pair.
+        """
+
+        # The expected structure of category distributions is
+        # tuple (len n_clusters)
+        #   [list(len n_categorical_features)
+        #       [list(categorical_cardinality - 1)]
+        #   ]
+        # A tuple containing matrices of shape
+        # (n_cat_features x (cardinality - 1))
+        # ONLY IF THE CARDINALITY IS CONSTANT.
+        # Generally, it is a list of lists defining probabilities.
+
+        # Checks that everything should be the way it is
+        if len(categorical_cardinalities) != n_categorical_features:
+            raise ValueError("Mismatched categorical cardinalities "
+                             f"({len(categorical_cardinalities)}) and number "
+                             "of categorical features "
+                             f"({n_categorical_features})")
+        if len(category_distributions) != n_clusters:
+            raise ValueError("Mismatched distributions "
+                             f"({len(category_distributions)}) and clusters "
+                             f"({n_clusters})")
+
+        for distr in category_distributions:
+            if len(distr) != n_categorical_features:
+                raise ValueError("Probability distributions must be provided "
+                                 "for all categorical features "
+                                 f"({n_categorical_features}). Only "
+                                 f"{len(distr)} have been specified.")
+
+            for i, var_distr in enumerate(distr):
+                if len(var_distr) != (categorical_cardinalities[i]-1):
+                    raise ValueError("Probability distribution must include "
+                                     "categorical_cardinalities - 1 values.")
+                if round(sum(var_distr), round_digits) > 1:
+                    raise ValueError("Probability distribution must not sum "
+                                     "up to more than one.")
+
+        # Code
+        output_columns = []
+
+        # Check the cluster and get the respective prob distribution
+        # Sample once from the multinomial. Use argmax to get the category
+        def choice_func(i_cluster):
+            return np.argmax(
+                random_generator.multinomial(
+                    1,
+                    pvals=category_distributions[i_cluster][i_feature] +
+                    [np.round(
+                        1-sum(
+                            category_distributions[i_cluster][i_feature]),
+                        round_digits)],
+                    size=1),
+                axis=1)
+
+        choice_func_vec = np.vectorize(choice_func)
+
+        for i_feature in range(n_categorical_features):
+            output_columns.append(choice_func_vec(cluster_assignment_vector))
+
+        return np.stack(output_columns, axis=1)
 
     @staticmethod
     def _consolidate_attribute_arrays(xlist: list[tuple[str, np.ndarray]],
