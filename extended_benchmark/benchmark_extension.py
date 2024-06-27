@@ -21,6 +21,8 @@ from kmodes.util.dissim import jaccard_dissim_sets
 
 # Constants
 VALID_PREPROCESS_MODES = ('naive', 'one-hot', 'one-hot-pca', 'extended')
+VALID_GENERATION_MODES = ('deterministic', 'probabilistic')
+
 PARAM_GUIDE = {
     'n_samples': int,
     'n_clusters': int,
@@ -614,8 +616,13 @@ class Experiment:
 
         return target, pd.DataFrame(column_dictionary), index_dict
 
-    def generate_data(self):
+    def generate_data(self,
+                      generation_mode: str = 'deterministic'):
         """Generate synthetic data for benchmarking."""
+        if generation_mode not in VALID_GENERATION_MODES:
+            raise ValueError("Argument 'generation_mode' must be one of "
+                             f"{VALID_GENERATION_MODES}.")
+
         xnum, y_true = make_classification(
             n_samples=self.benchmarking_config['n_samples'],
             n_features=self.benchmarking_config['n_numeric_features'],
@@ -629,22 +636,41 @@ class Experiment:
             class_sep=self.benchmarking_config['separability'],
             random_state=self.random_state
             )
-        xcat, _ = \
-            self._assign_categorical_features(class_labels=y_true,
-                                              cardinalities=self
-                                              .benchmarking_config
-                                              ['categorical_cardinalities'],
-                                              random_state=self.random_state
-                                              )
-        xmulti, _ = self._assign_multival_features(class_labels=y_true,
-                                                   subvocab_lengths=self
-                                                   .benchmarking_config
-                                                   ['multival_vocab_lens'],
-                                                   intersection_lvl=self
-                                                   .benchmarking_config
-                                                   ['multival_intersections']
-                                                   )
-        # Put everything together
+
+        if generation_mode == 'deterministic':
+            xcat, _ = \
+                self._assign_categorical_features(
+                    class_labels=y_true,
+                    cardinalities=self
+                    .benchmarking_config['categorical_cardinalities'],
+                    random_state=self.random_state
+                    )
+            xmulti, _ = \
+                self._assign_multival_features(
+                    class_labels=y_true,
+                    subvocab_lengths=self
+                    .benchmarking_config['multival_vocab_lens'],
+
+                    intersection_lvl=self
+                    .benchmarking_config['multival_intersections']
+                    )
+        elif generation_mode == 'probabilistic':    # Slower, but readable
+            xcat = self._sample_categorical_attributes(
+                cluster_assignment_vector=y_true,
+                category_distributions=self
+                .benchmarking_config['category_distributions'],
+
+                n_categorical_features=self
+                .benchmarking_config['n_categorical_features'],
+
+                categorical_cardinalities=self
+                .benchmarking_config['categorical_cardinalities'],
+
+                n_clusters=self.benchmarking_config['n_clusters'],
+                random_generator=np.random.default_rng(self.random_state)
+            )
+
+# Put everything together
         all_attributes = [
             ('num', xnum),
             ('cat', xcat),
