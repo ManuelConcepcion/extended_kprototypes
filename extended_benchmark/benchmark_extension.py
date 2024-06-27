@@ -1,6 +1,8 @@
 """Provide the necessary tools for benchmarking Extended K-Prototypes."""
 # Imports
 import time
+from copy import deepcopy
+from collections import defaultdict
 from typing import Any, Optional
 from itertools import combinations_with_replacement
 
@@ -83,9 +85,12 @@ class Preprocessor:
                                cut_dummies: bool) -> pd.DataFrame:
         processed_df = raw_data.copy()
 
+        def list_func(x):
+            return list(x)
+
         for col in self.multival_indexes:
             processed_df.iloc[:, col] = (processed_df.iloc[:, col]
-                                         .apply(lambda x: list(x)))
+                                         .apply(list_func))
         df_as_is = processed_df.iloc[:, [i for i in
                                          range(processed_df.shape[1]) if i not
                                          in self.multival_indexes]]
@@ -304,9 +309,11 @@ class Experiment:
                 cluster_classes_keys)
 
     @staticmethod
-    def _assign_multival_features(class_labels: np.ndarray,
-                                  subvocab_lengths: list,
-                                  intersection_lvl: int) -> np.ndarray:
+    def _assign_multival_features(
+        class_labels: np.ndarray,
+        subvocab_lengths: list,
+        intersection_lvl: int
+    ) -> tuple[np.ndarray, list[dict]]:
         """
         Create multi-valued attributes from class labels, the lengths of the
         vocabulary subsets that are assigned to each label, and the degree to
@@ -369,13 +376,14 @@ class Experiment:
 
     @staticmethod
     def _sample_categorical_attributes(
-            cluster_assignment_vector: np.ndarray[int],
-            category_distributions: tuple[list[list[float]]],
-            n_categorical_features: int,
-            categorical_cardinalities: list[int],
-            n_clusters: int,
-            random_generator: np.random.Generator,
-            round_digits: int = 5):
+        cluster_assignment_vector: np.ndarray[int],
+        category_distributions: tuple[list[list[float]]],
+        n_categorical_features: int,
+        categorical_cardinalities: list[int],
+        n_clusters: int,
+        random_generator: np.random.Generator,
+        round_digits: int = 5
+    ) -> np.ndarray:
         """
         Use categorical distributions to sample the categorical attributes of
         a dataset. A category distribution is specified for each cluster and
@@ -439,6 +447,149 @@ class Experiment:
 
         for i_feature in range(n_categorical_features):
             output_columns.append(choice_func_vec(cluster_assignment_vector))
+
+        return np.stack(output_columns, axis=1)
+
+    @staticmethod
+    def _sample_multival_once_iter(
+        iterations: int,
+        base_chance: list[float],
+        conditional_probabilities: dict,
+        random_generator: np.random.Generator
+    ) -> set[int]:
+        """
+        Sample a single observation's entry for a multi-valued attribute
+        given a base chance and a dictionary of conditional probabilities.
+        Sampling stops when the specified number of iterations is reached.
+        """
+        choice = np.argmax(
+            random_generator.multinomial(
+                1,
+                pvals=base_chance+[round(1-sum(base_chance))]
+            )
+        )
+        choice_set = {choice}
+
+        for _ in range(iterations):
+            # Will get the base chance or the specified ones
+            choice = np.argmax(
+                random_generator.multinomial(
+                    1,
+                    pvals=conditional_probabilities[choice]+[
+                        round(1-sum(conditional_probabilities[choice]))
+                    ]
+                )
+            )
+            choice_set.add(choice)
+
+        return choice_set
+
+    @staticmethod
+    def _sample_multival_once_target(
+        target: int,
+        base_chance: list[float],
+        conditional_probabilities: dict,
+        random_generator: np.random.Generator
+    ) -> set[int]:
+        """
+        Sample a single oobservation's entry for a multi-valued attribute
+        given a base chance and a dictionary of conditional probabilities.
+        Sampling stops when the specified target cardinality is reached.
+        """
+        choice = np.argmax(
+            random_generator.multinomial(
+                1,
+                pvals=base_chance+[round(1-sum(base_chance))]
+            )
+        )
+        choice_set = {choice}
+
+        while len(choice_set) < target:
+            # Will get the base chance or the specified ones
+            choice = np.argmax(
+                random_generator.multinomial(
+                    1,
+                    pvals=conditional_probabilities[choice]+[
+                        round(1-sum(conditional_probabilities[choice]))
+                    ]
+                )
+            )
+            choice_set.add(choice)
+
+        return choice_set
+
+    def _sample_multival_attributes(
+        self,
+        cluster_assignment_vector: np.ndarray,
+        n_clusters: int,
+        n_multival_features: int,
+        base_chances: list[list[float]],
+        conditional_probabilities: list[dict],
+        random_generator: np.random.Generator,
+        iterations: Optional[int] = None,
+        target_len: Optional[int] = None
+    ) -> tuple[np.ndarray, list[dict]]:
+        """Sample the multivalued attributes from probability distributions."""
+
+        # Check input integrity
+        if len(base_chances) != n_clusters:
+            raise ValueError(
+                "The iterable containing lists with the conditional "
+                "probability distributions must be of length "
+                f"equal to n_clusters ({n_clusters}).")
+        # if both are None or specified
+        if (iterations is None) == (target_len is None):
+            raise ValueError("Arguments 'iterations' and 'target_len' are "
+                             "mutually exclusive. Specify one or the other.")
+
+        # Define this here so we do not have scope problems in the default dict
+        def fixed_lambda(val):
+            return lambda: val
+
+        # Cache the p-dicts here for the function call below
+        cluster_p_dicts = []
+        for i_cluster in range(n_clusters):
+            feature_dicts = []
+
+            for i_feature in range(n_multival_features):
+                base_chance = deepcopy(
+                    base_chances[i_cluster][i_feature]+[round(
+                        1-sum(base_chances[i_cluster][i_feature]))
+                    ])
+                p_dict = defaultdict(fixed_lambda(base_chance))
+
+                p_dict.update(conditional_probabilities[i_cluster][i_feature])
+                feature_dicts.append(p_dict)
+
+            cluster_p_dicts.append(feature_dicts)
+
+        # Vectorize the sampling function to create the features
+        output_columns = []
+
+        def iter_func(i_cl, i_feat):
+            return self._sample_multival_once_iter(
+                iterations=iterations,
+                base_chance=base_chances[i_cl][i_feat],
+                conditional_probabilities=cluster_p_dicts[i_cl][i_feat],
+                random_generator=random_generator
+            )
+
+        def target_func(i_cl, i_feat):
+            return self._sample_multival_once_target(
+                target=target_len,
+                base_chance=base_chances[i_cl][i_feat],
+                conditional_probabilities=cluster_p_dicts[i_cl][i_feat],
+                random_generator=random_generator
+            )
+
+        for i_feature in range(n_multival_features):
+            if iterations:
+                sampling_func = np.vectorize(iter_func)
+            else:
+                sampling_func = np.vectorize(target_func)
+
+            output_columns.append(sampling_func(cluster_assignment_vector,
+                                                i_feature))
 
         return np.stack(output_columns, axis=1)
 
