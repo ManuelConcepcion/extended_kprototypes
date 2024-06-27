@@ -710,7 +710,7 @@ class Experiment:
             )
 
         for approach in self.approaches:
-            approaches_results[approach] = {}
+            approach_dict = dict()
             start = time.perf_counter()
 
             (approaches_data_dict[approach],
@@ -718,12 +718,15 @@ class Experiment:
                 data_preprocessor.preprocess_data(approach=approach)
 
             stop = time.perf_counter()
-            approaches_results[approach]['preprocess_time'] = stop-start
+            approach_dict['preprocess_time'] = stop-start
+            approaches_results[approach] = approach_dict
 
         # Now that the data for each approach is prepared, run the experiment
         # with the provided configuration.
 
         for approach in self.approaches:
+            approach_dict = deepcopy(approaches_results[approach])
+
             if approach == 'extended':
                 gamma_c = (self.benchmarking_config['approach_settings']
                            [approach]['gamma_c'])
@@ -758,7 +761,7 @@ class Experiment:
                 gamma = (self.benchmarking_config['approach_settings']
                          [approach]['gamma'])
                 if gamma:
-                    approaches_results[approach]['gamma'] = gamma
+                    approach_dict['gamma'] = gamma
 
                 kp = KPrototypes(
                     n_clusters=self.benchmarking_config['n_clusters'],
@@ -776,25 +779,27 @@ class Experiment:
                     kp_gamma=kp.gamma
                 )
 
-            approaches_results[approach]['clustering_time'] = stop-start
-            approaches_results[approach]['sum_of_times'] = (
-                approaches_results[approach]['preprocess_time'] + (stop-start))
-            approaches_results[approach]['n_iter'] = kp.n_iter_
+            approach_dict['clustering_time'] = stop-start
+            approach_dict['sum_of_times'] = (
+                approach_dict['preprocess_time'] + (stop-start)
+            )
+            approach_dict['n_iter'] = kp.n_iter_
 
             predicted_labels = kp.labels_
-            
+
             if self.true_labels is not None:
-                approaches_results[approach]['MIS'] = \
+                approach_dict['MIS'] = \
                     adjusted_mutual_info_score(labels_true=self.true_labels,
-                                            labels_pred=predicted_labels)
-                approaches_results[approach]['ARI'] = \
+                                               labels_pred=predicted_labels)
+                approach_dict['ARI'] = \
                     adjusted_rand_score(labels_true=self.true_labels,
                                         labels_pred=predicted_labels)
-            
-            approaches_results[approach]['Silhouette Index'] = \
-                silhouette_result
 
-            approaches_results[approach]['centroids'] = kp.cluster_centroids_
+            approach_dict['Silhouette Index'] = silhouette_result
+
+            approach_dict['centroids'] = kp.cluster_centroids_
+
+            approaches_results[approach] = approach_dict
 
         return approaches_results
 
