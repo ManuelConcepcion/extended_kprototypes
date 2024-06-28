@@ -23,7 +23,7 @@ from kmodes.util.dissim import jaccard_dissim_sets
 VALID_PREPROCESS_MODES = ('naive', 'one-hot', 'one-hot-pca', 'extended')
 VALID_GENERATION_MODES = ('deterministic', 'probabilistic')
 
-PARAM_GUIDE = {
+DET_PARAM_GUIDE = {
     'n_samples': int,
     'n_clusters': int,
     # Numeric features
@@ -37,6 +37,27 @@ PARAM_GUIDE = {
     # Difficulty params
     'separability': float,
     'multival_intersections': int,
+    'noise': float,
+    'class_weights': list,
+    # Approach settings
+    'approach_settings': dict
+}
+PROB_PARAM_GUIDE = {
+    'n_samples': int,
+    'n_clusters': int,
+    # Numeric features,
+    'n_numeric_features': int,
+    # Categorical Features
+    'n_categorical_features': int,
+    'categorical_cardinalities': list,
+    'category_distributions': tuple,
+    # Multi-valued Features
+    'n_multival_features': int,
+    'iter_or_target_len': int,
+    'base_chances': tuple,
+    'conditional_probabilities': tuple,
+    # Difficulty params
+    'separability': float,
     'noise': float,
     'class_weights': list,
     # Approach settings
@@ -190,9 +211,18 @@ class Experiment:
     def __init__(self,
                  benchmarking_config: dict[str, Any],
                  approaches: tuple[str] = ('extended',),
+                 data_generation_mode: str = 'deterministic',
                  random_state: int = 42) -> None:
-        self.benchmarking_config = self._validate_config(benchmarking_config,
-                                                         PARAM_GUIDE)
+        if data_generation_mode == 'deterministic':
+            self.benchmarking_config = self._validate_config(
+                benchmarking_config, DET_PARAM_GUIDE)
+        elif data_generation_mode == 'probabilistic':
+            self.benchmarking_config = self._validate_config(
+                benchmarking_config, PROB_PARAM_GUIDE)
+        else:
+            raise ValueError("Arg 'data_generation_mode' must be one of "
+                             f"{VALID_GENERATION_MODES}")
+        self.generation_mode = data_generation_mode
         self.approaches = approaches
         self.random_state = random_state
 
@@ -222,35 +252,10 @@ class Experiment:
                                  "had size "
                                  f"{len(config_dict['class_weights'])}.")
 
-        if (len(config_dict['categorical_cardinalities']) !=
-                config_dict['n_categorical_features']):
-
-            raise ValueError("A cardinality must be provided for every "
-                             "categorical attribute. "
-                             f"{len(config_dict['categorical_cardinalities'])}"
-                             " cardinalities were provided for "
-                             f"{config_dict['n_categorical_features']}.")
-        if (len(config_dict['multival_vocab_lens']) !=
-                config_dict['n_multival_features']):
-
-            raise ValueError("A vocabulary length must be provided for every "
-                             f"multi-valued attribute. "
-                             f"{len(config_dict['multival_subvocab_length'])} "
-                             "vocabulary length list-likes were provided for "
-                             f"{config_dict['n_multival_features']} "
-                             "attributes.")
-
         for card in config_dict['categorical_cardinalities']:
             if card < config_dict['n_clusters']:
                 raise ValueError("Categorical attribute cardinalities cannot "
                                  "be lower than n_clusters.")
-
-        for card_tuple in config_dict['multival_vocab_lens']:
-            if len(card_tuple) != config_dict['n_clusters']:
-                raise ValueError("A sub-vocabulary length must be provided for"
-                                 f" each cluster. {card_tuple} was provided "
-                                 "without the required length "
-                                 f"{config_dict['n_clusters']}")
 
         if (config_dict['approach_settings']['extended']['gamma_m'] +
                 config_dict['approach_settings']['extended']['gamma_c'] >=
@@ -616,10 +621,9 @@ class Experiment:
 
         return target, pd.DataFrame(column_dictionary), index_dict
 
-    def generate_data(self,
-                      generation_mode: str = 'deterministic'):
+    def generate_data(self):
         """Generate synthetic data for benchmarking."""
-        if generation_mode not in VALID_GENERATION_MODES:
+        if self.generation_mode not in VALID_GENERATION_MODES:
             raise ValueError("Argument 'generation_mode' must be one of "
                              f"{VALID_GENERATION_MODES}.")
 
@@ -637,7 +641,35 @@ class Experiment:
             random_state=self.random_state
             )
 
-        if generation_mode == 'deterministic':
+        if self.generation_mode == 'deterministic':
+            config_dict = self.benchmarking_config
+            # Verify structural integrity of the input
+            if (len(config_dict['categorical_cardinalities']) !=
+                    config_dict['n_categorical_features']):
+                raise ValueError(
+                    "A cardinality must be provided for every "
+                    "categorical attribute. "
+                    f"{len(config_dict['categorical_cardinalities'])}"
+                    " cardinalities were provided for "
+                    f"{config_dict['n_categorical_features']}.")
+
+            if (len(config_dict['multival_vocab_lens']) !=
+                    config_dict['n_multival_features']):
+                raise ValueError(
+                    "A vocabulary length must be provided for every "
+                    "multi-valued attribute. "
+                    f"{len(config_dict['multival_subvocab_length'])} "
+                    "vocabulary length list-likes were provided for "
+                    f"{config_dict['n_multival_features']} attributes.")
+
+            for card_tuple in config_dict['multival_vocab_lens']:
+                if len(card_tuple) != config_dict['n_clusters']:
+                    raise ValueError(
+                        "A sub-vocabulary length must be provided for"
+                        f" each cluster. {card_tuple} was provided "
+                        "without the required length "
+                        f"{config_dict['n_clusters']}")
+
             xcat, _ = \
                 self._assign_categorical_features(
                     class_labels=y_true,
@@ -654,7 +686,7 @@ class Experiment:
                     intersection_lvl=self
                     .benchmarking_config['multival_intersections']
                     )
-        elif generation_mode == 'probabilistic':    # Slower, but readable
+        elif self.generation_mode == 'probabilistic':    # Slower, but readable
             xcat = self._sample_categorical_attributes(
                 cluster_assignment_vector=y_true,
                 category_distributions=self
@@ -670,7 +702,27 @@ class Experiment:
                 random_generator=np.random.default_rng(self.random_state)
             )
 
-# Put everything together
+            xmulti = self._sample_multival_attributes(
+                cluster_assignment_vector=y_true,
+                n_clusters=self
+                .benchmarking_config['n_clusters'],
+
+                n_multival_features=self
+                .benchmarking_config['n_multival_features'],
+
+                base_chances=self
+                .benchmarking_config['base_chances'],
+
+                conditional_probabilities=self
+                .benchmarking_config['conditional_probabilities'],
+
+                iterations=self
+                .benchmarking_config['iter_or_target_len'],
+
+                random_generator=np.random.default_rng(self.random_state)
+            )
+
+    # Put everything together
         all_attributes = [
             ('num', xnum),
             ('cat', xcat),
@@ -840,7 +892,10 @@ class Experiment:
         This function works linearly, such that all arguments[i] will be tried
         at iteration i and no more.
         """
-        config = self._validate_config(base_config, PARAM_GUIDE)
+        if self.generation_mode == 'deterministic':
+            config = self._validate_config(base_config, DET_PARAM_GUIDE)
+        elif self.generation_mode == 'probabilistic':
+            config = self._validate_config(base_config, PROB_PARAM_GUIDE)
 
         # Check that kwargs have the same length.
         value_lens = []
