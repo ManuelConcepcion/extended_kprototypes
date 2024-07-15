@@ -3,13 +3,13 @@
 import time
 from copy import deepcopy
 from collections import defaultdict
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from itertools import combinations_with_replacement
 
 import numpy as np
 import pandas as pd
 
-from scipy.spatial.distance import pdist, squareform
+from scipy.spatial.distance import cdist, pdist, squareform
 from sklearn.datasets import make_classification
 from sklearn.decomposition import PCA
 from sklearn.metrics import \
@@ -769,6 +769,82 @@ class Experiment:
 
         return silhouette_score(distance_matrix, labels, metric="precomputed")
 
+    @staticmethod
+    def determine_multival_medoid_index(out_cols_array: np.ndarray,
+                                        dissim_func: Callable):
+        """
+        Determine the medoid of the multi-valued attributes for an individual
+        cluster.
+        """
+        out_cols_np = []
+        n_rows = out_cols_array.shape[0]
+
+        for col in range(out_cols_array.shape[1]):
+            out_cols_np.append(
+                out_cols_array[:, col].reshape(n_rows, -1)
+            )
+
+        dist_result = map(lambda np_array: squareform(
+                        pdist(np_array, dissim_func)
+                        ),
+                        out_cols_np
+                        )
+
+        total_dist_matrix = sum(dist_result)
+
+        # Check that the diagonal is only zeroes
+        if not np.all(np.diagonal(total_dist_matrix) == 0):
+            raise ValueError("Distance matrix diagonal is not all zeroes. "
+                             "Possible problem with the multi-val attributes.")
+
+        # Axis is irrelevant because matrix is NxN symmetric
+        return np.argmin(np.sum(total_dist_matrix, axis=0)), total_dist_matrix
+
+    def determine_multival_medoids(self,
+                                   n_clusters: int,
+                                   cluster_assignment_array: np.ndarray,
+                                   multival_features_array: np.ndarray,
+                                   dissim_func: Callable):
+        """
+        Calculate medoids for the clusters by using the
+        multi-valued attributes.
+        """
+        # Subset multival_features_array according by cluster assignment
+        cluster_subset_arrays = []
+
+        for i_cluster in range(n_clusters):
+            cluster_subset_arrays.append(
+                multival_features_array[cluster_assignment_array == i_cluster]
+                )
+
+        # For each of the sub-arrays, find their modal set
+        medoid_subindexes = [item[0] for item in list(
+            map(lambda x: self.determine_multival_medoid_index(x, dissim_func),
+                cluster_subset_arrays)
+            )]
+
+        out_medoids = []
+        for i_cluster in range(n_clusters):
+            out_medoids.append(
+                cluster_subset_arrays[i_cluster][medoid_subindexes[i_cluster]]
+                )
+
+        return out_medoids
+
+    @staticmethod
+    def normalized_sum_of_nearest_centroids(n_clusters: int,
+                                            centroid_array: np.array,
+                                            medoid_array: np.array,
+                                            distance_function: Callable):
+        """
+        Measure the distances between all medoids and centroids and find the
+        sum of the closest distance pairs.
+        """
+        return np.min(
+            cdist(centroid_array, medoid_array, distance_function),
+            axis=1
+        ).sum() / n_clusters
+
     def run_experiment(self):
         """Run an experiment configuration over the approaches provided."""
         if self.data is None:
@@ -876,6 +952,26 @@ class Experiment:
             approach_dict['Silhouette Index'] = silhouette_result
 
             approach_dict['centroids'] = kp.cluster_centroids_
+
+            multi_colnames = [f'multi_{i}' for i in range(
+                self.benchmarking_config['n_multival_features'])]
+            medoids = self.determine_multival_medoids(
+                n_clusters=self.benchmarking_config['n_clusters'],
+                cluster_assignment_array=self.true_labels,
+                multival_features_array=self.data[multi_colnames].to_numpy(),
+                dissim_func=jaccard_dissim_sets
+            )
+            multival_centroids = \
+                kp.cluster_centroids_[:,
+                                      -self.benchmarking_config[
+                                          'n_multival_features']:]
+            approach_dict['sum_of_dists_medoids'] = \
+                self.normalized_sum_of_nearest_centroids(
+                    n_clusters=self.benchmarking_config['n_clusters'],
+                    centroid_array=multival_centroids,
+                    medoid_array=medoids,
+                    distance_function=jaccard_dissim_sets
+            )
 
             approaches_results[approach] = approach_dict
 
